@@ -210,13 +210,27 @@ st.markdown("""
 
     /* Data Table Toolbar: Streamlit hides the dataframe's utility icons
        (search, download, fullscreen) at opacity 0 until the user hovers.
-       Force them to stay visible at all times instead. */
-    div[data-testid="stElementToolbar"],
-    div[data-testid="stElementToolbarButton"],
-    div[data-testid="stDataFrameToolbar"] {
+       Force them to stay visible at all times instead.
+       Using [data-testid*="Toolbar"] (attribute CONTAINS "Toolbar") rather
+       than exact names, since Streamlit has renamed this testid across
+       versions — this catches stElementToolbar, stDataFrameToolbar, or any
+       other *Toolbar* variant regardless of the exact string. Also targets
+       the dataframe's own hover-triggered wrapper classes as a second,
+       independent way to force the same result in case the testid
+       approach doesn't match your installed version at all. */
+    div[data-testid*="Toolbar"],
+    div[data-testid*="toolbar"],
+    div[class*="toolbar"] {
         opacity: 1 !important;
         visibility: visible !important;
         pointer-events: auto !important;
+    }
+    /* stDataFrame/stDataEditor sometimes gate the toolbar's visibility on
+       a parent :hover rule instead of the toolbar's own opacity - this
+       forces any such parent's toolbar child to stay shown too. */
+    div[data-testid="stDataFrame"] *,
+    div[data-testid="stDataEditor"] * {
+        opacity: 1 !important;
     }
 
     /* Dark Modern Footer */
