@@ -1,7 +1,7 @@
 Tech Talent & Market Intelligence Dashboard
 An interactive, data-driven web application built with Python and Streamlit designed to analyze tech industry workforce trends, benchmark salary distributions, and perform multi-currency financial analysis for global talent market intelligence.
 
-Live Demo: Tech Talent Market Intelligence App
+Live Demo: [Tech Talent Market Intelligence App](https://tech-talent-market-intelligence-o432vzlext8ss5t9x7pydc.streamlit.app/)
 Key Features
 * Interactive Executive Dashboard: Clean user interface providing top-level KPI metrics, salary benchmarking, and market distribution summaries.
 
