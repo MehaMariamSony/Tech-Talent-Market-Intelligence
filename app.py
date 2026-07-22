@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+from fpdf import FPDF
 
 # ----------------------------------------------------
 # 1. PAGE SETUP
@@ -17,7 +19,7 @@ st.markdown("""
     <style>
     /* Global Styling */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap');
-
+    
     html, body, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
         background-color: #F8FAFC;
@@ -130,10 +132,28 @@ st.markdown("""
         margin: 40px auto;
         box-shadow: 0 10px 25px -5px rgba(37, 99, 235, 0.1);
     }
-    .upload-icon {
-        font-size: 48px;
-        margin-bottom: 10px;
+
+    /* Blue Upload Icon Pill (replaces old folder emoji) */
+    .upload-btn-icon {
+        background-color: #2563EB;
+        color: #FFFFFF;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 8px;
+        cursor: pointer;
+        user-select: none;
     }
+    .upload-limit-text {
+        font-size: 13px;
+        color: #64748B;
+        margin-bottom: 20px;
+    }
+
     .upload-tag {
         font-size: 13px;
         font-weight: 700;
@@ -155,34 +175,48 @@ st.markdown("""
         margin-bottom: 24px;
     }
 
-    /* Blue File Uploader Drop Zone & Button */
-    div[data-testid="stFileUploader"] {
-        width: 100%;
-        max-width: 600px;
-        margin: 0 auto;
+    /* The real Streamlit uploader must stay mounted (Streamlit needs it in
+       the DOM to function) but it is collapsed to zero footprint so no box,
+       gutter, or spacing shows up anywhere on the page. The blue "Upload"
+       pill above triggers its hidden <input type="file"> directly.
+       NOTE: this targets the uploader by its Streamlit data-testid directly
+       rather than a wrapping <div> from st.markdown, because markdown HTML
+       and widgets render as separate sibling elements in Streamlit's DOM —
+       a markdown div can never actually contain a later widget call. We
+       also collapse the uploader's own element-container parent so no
+       padding/margin/gap is left behind. Since there is only one file
+       uploader on this page, targeting the testid globally is safe. */
+    div[data-testid="stFileUploader"],
+    div[data-testid="stFileUploader"] * ,
+    div:has(> div[data-testid="stFileUploader"]) {
+        position: absolute !important;
+        width: 0 !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        max-height: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        border: 0 !important;
+        overflow: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        visibility: hidden !important;
     }
-    div[data-testid="stFileUploader"] section {
-        padding: 30px !important;
-        background-color: #DBEAFE !important;
-        border: 2px dashed #2563EB !important;
-        border-radius: 12px !important;
-    }
-    div[data-testid="stFileUploader"] section:hover {
-        background-color: #BFDBFE !important;
+    /* Re-enable pointer events on just the native input so our JS can
+       still .click() it programmatically even though it's visually gone. */
+    div[data-testid="stFileUploader"] input[type="file"] {
+        pointer-events: auto !important;
     }
 
-    /* Style the Upload Button inside Streamlit file uploader to be Blue */
-    div[data-testid="stFileUploader"] button {
-        background-color: #2563EB !important;
-        color: #FFFFFF !important;
-        border: none !important;
-        border-radius: 8px !important;
-        padding: 8px 16px !important;
-        font-weight: 600 !important;
-    }
-    div[data-testid="stFileUploader"] button:hover {
-        background-color: #1D4ED8 !important;
-        color: #FFFFFF !important;
+    /* Data Table Toolbar: Streamlit hides the dataframe's utility icons
+       (search, download, fullscreen) at opacity 0 until the user hovers.
+       Force them to stay visible at all times instead. */
+    div[data-testid="stElementToolbar"],
+    div[data-testid="stElementToolbarButton"],
+    div[data-testid="stDataFrameToolbar"] {
+        opacity: 1 !important;
+        visibility: visible !important;
+        pointer-events: auto !important;
     }
 
     /* Dark Modern Footer */
@@ -232,6 +266,68 @@ st.markdown("""
 if 'uploaded_file' not in st.session_state:
     st.session_state['uploaded_file'] = None
 
+def _pdf_output_to_bytes(pdf: "FPDF") -> bytes:
+    """Normalize pdf.output(dest="S") across fpdf library variants.
+
+    fpdf2 (the actively maintained fork, recommended) returns a bytearray
+    from this call, so bytes(...) on it works directly. The older classic
+    `fpdf` package (PyFPDF) instead returns a plain str for the same call,
+    and bytes(some_str) raises "string argument without an encoding" — which
+    is the exact error this works around. Run `pip install fpdf2` (and
+    uninstall plain `fpdf` if both are present) to get the actively
+    maintained library; this fallback just keeps the app working either way.
+    """
+    raw = pdf.output(dest="S")
+    if isinstance(raw, str):
+        return raw.encode("latin-1", "replace")
+    return bytes(raw)
+
+
+def generate_pdf_report(dataframe: pd.DataFrame, title: str, max_rows: int = 200) -> bytes:
+    """Render a dataframe as a simple tabular PDF using fpdf.
+
+    The built-in core fonts only support latin-1, so any character outside
+    that range (e.g. non-Latin currency symbols) is replaced rather than
+    left to raise an encoding error. Row count is capped so the PDF stays a
+    reasonable size and render time for large datasets.
+    """
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=12)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, title.encode("latin-1", "replace").decode("latin-1"), ln=True)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.cell(0, 6, f"{len(dataframe):,} total record(s), showing up to {max_rows}", ln=True)
+    pdf.ln(3)
+
+    col_names = [str(c) for c in dataframe.columns]
+    if not col_names:
+        pdf.cell(0, 8, "No columns to display.")
+        return _pdf_output_to_bytes(pdf)
+
+    usable_width = pdf.w - pdf.l_margin - pdf.r_margin
+    col_width = usable_width / len(col_names)
+
+    pdf.set_font("Helvetica", "B", 8)
+    pdf.set_fill_color(37, 99, 235)
+    pdf.set_text_color(255, 255, 255)
+    for col in col_names:
+        label = col.encode("latin-1", "replace").decode("latin-1")
+        pdf.cell(col_width, 8, label[:22], border=1, fill=True)
+    pdf.ln()
+
+    pdf.set_font("Helvetica", "", 7)
+    pdf.set_text_color(15, 23, 42)
+    for _, row in dataframe.head(max_rows).iterrows():
+        for col in col_names:
+            val = str(row[col]).encode("latin-1", "replace").decode("latin-1")
+            pdf.cell(col_width, 7, val[:22], border=1)
+        pdf.ln()
+
+    return _pdf_output_to_bytes(pdf)
+
+
 EXCHANGE_RATES = {
     "INR (₹) - Indian Rupee": ("₹", 83.5, "INR"),
     "USD ($) - US Dollar": ("$", 1.0, "USD"),
@@ -248,26 +344,63 @@ EXCHANGE_RATES = {
 if st.session_state['uploaded_file'] is None:
     st.markdown("""
         <div class="upload-container-card">
-            <div class="upload-icon">📁</div>
+            <div class="upload-btn-icon" id="trigger-upload-pill">⬆️ Upload</div>
+            <div class="upload-limit-text">200MB per file • CSV</div>
             <div class="upload-title">UPLOAD FILE</div>
             <div class="upload-subtext">Drag and drop your CSV file below to launch the dashboard and executive analytics.</div>
         </div>
     """, unsafe_allow_html=True)
 
-    col_left, col_mid, col_right = st.columns([1, 4, 1])
-    with col_mid:
-        uploaded_file = st.file_uploader("", type=["csv"], key="main_uploader")
-        if uploaded_file is not None:
-            st.session_state['uploaded_file'] = uploaded_file
-            st.rerun()
+    # The real uploader is rendered here and collapsed to zero footprint by
+    # the data-testid CSS rule above (Streamlit widgets render as their own
+    # sibling DOM elements, so a wrapping markdown <div> can't contain them —
+    # targeting the testid directly is what actually hides it).
+    uploaded_file = st.file_uploader("", type=["csv"], key="main_uploader", label_visibility="collapsed")
+
+    if uploaded_file is not None:
+        st.session_state['uploaded_file'] = uploaded_file
+        st.rerun()
+
+    # Wire the blue pill to the hidden native file input. Uses a recurring
+    # attach (rather than a one-shot inline onclick) so the handler survives
+    # Streamlit's re-renders of the DOM.
+    #
+    # IMPORTANT: this must go through components.v1.html, not st.markdown.
+    # st.markdown() inserts HTML via innerHTML, and browsers never execute
+    # <script> tags inserted that way (a browser security behavior) — so a
+    # <script> block placed via st.markdown silently does nothing.
+    # components.v1.html renders in a real iframe, where scripts do execute.
+    # From inside that iframe we reach back into the main page with
+    # window.parent.document to find the pill and the hidden file input.
+    st.components.v1.html("""
+        <script>
+        (function() {
+            function wireUploadPill() {
+                const doc = window.parent.document;
+                const pill = doc.getElementById('trigger-upload-pill');
+                if (!pill || pill.dataset.wired === 'true') return;
+
+                const fileInput = doc.querySelector('div[data-testid="stFileUploader"] input[type="file"]');
+                if (!fileInput) return;
+
+                pill.addEventListener('click', function() {
+                    fileInput.click();
+                });
+                pill.dataset.wired = 'true';
+            }
+            setInterval(wireUploadPill, 500);
+            wireUploadPill();
+        })();
+        </script>
+    """, height=0, width=0)
 
 # If file is present
 if st.session_state['uploaded_file'] is not None:
     uploaded_file = st.session_state['uploaded_file']
-
+    
     uploaded_file.seek(0)
     df = pd.read_csv(uploaded_file)
-
+    
     # Sidebar Controls
     st.sidebar.markdown("### Control Panel")
     if st.sidebar.button("Upload New File"):
@@ -280,13 +413,13 @@ if st.session_state['uploaded_file'] is not None:
         "Select Target Currency:",
         list(EXCHANGE_RATES.keys())
     )
-
+    
     currency_symbol, conversion_rate, currency_code = EXCHANGE_RATES[selected_currency]
-
+    
     # Convert Currency
     converted_df = df.copy()
     numeric_cols_raw = converted_df.select_dtypes(include=['float64', 'int64']).columns.tolist()
-
+    
     for col in numeric_cols_raw:
         converted_df[col] = converted_df[col] * conversion_rate
 
@@ -295,7 +428,7 @@ if st.session_state['uploaded_file'] is not None:
         if "usd" in col.lower() or "salary" in col.lower():
             new_name = col.lower().replace("salary_usd", f"Salary ({currency_code})").replace("usd", currency_code).title()
             rename_mapping[col] = new_name
-
+            
     converted_df.rename(columns=rename_mapping, inplace=True)
     numeric_cols = converted_df.select_dtypes(include=['float64', 'int64']).columns.tolist()
     all_cols = converted_df.columns.tolist()
@@ -312,13 +445,36 @@ if st.session_state['uploaded_file'] is not None:
     else:
         filtered_df = converted_df
 
-    # Download Button
+    # Column & Sort Controls
     st.sidebar.markdown("---")
+    st.sidebar.markdown("### Column & Sort Controls")
+    selected_columns = st.sidebar.multiselect(
+        "Columns to display:",
+        options=all_cols,
+        default=all_cols
+    )
+    sort_column = st.sidebar.selectbox("Sort by:", options=all_cols, key="sort_column")
+    sort_ascending = st.sidebar.radio(
+        "Sort order:", options=["Ascending", "Descending"], horizontal=True
+    ) == "Ascending"
+
+    filtered_df = filtered_df.sort_values(by=sort_column, ascending=sort_ascending)
+    display_df = filtered_df[selected_columns] if selected_columns else filtered_df
+
+    # Download Buttons: CSV and PDF
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Export")
     st.sidebar.download_button(
         label="Download Report (CSV)",
-        data=filtered_df.to_csv(index=False),
+        data=display_df.to_csv(index=False),
         file_name=f"Data_Report_{currency_code}.csv",
         mime="text/csv"
+    )
+    st.sidebar.download_button(
+        label="Download Report (PDF)",
+        data=generate_pdf_report(display_df, f"Data Report ({currency_code})"),
+        file_name=f"Data_Report_{currency_code}.pdf",
+        mime="application/pdf"
     )
 
     # ----------------------------------------------------
@@ -342,36 +498,57 @@ if st.session_state['uploaded_file'] is not None:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Records Analyzed", f"{len(filtered_df):,}")
         col2.metric("Data Columns", f"{len(df.columns)}")
-
+        
         if numeric_cols:
             max_val = filtered_df[numeric_cols[0]].max()
             col3.metric("Highest Benchmark", f"{currency_symbol}{max_val:,.0f}")
         else:
             col3.metric("Highest Benchmark", "N/A")
-
+            
         col4.metric("Active Currency", currency_code)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
         st.markdown("### Visual Distribution Explorer")
-
+        
         selected_chart = st.selectbox("Select metric/column to plot:", all_cols)
 
         if selected_chart in numeric_cols:
-            st.bar_chart(filtered_df[selected_chart].head(30))
+            chart_data = filtered_df[[selected_chart]].head(30).reset_index(drop=True)
+            fig = px.bar(
+                chart_data, x=chart_data.index, y=selected_chart,
+                title=f"{selected_chart} — Top 30 Records",
+                labels={"x": "Record", selected_chart: selected_chart}
+            )
         else:
-            cat_counts = filtered_df[selected_chart].value_counts().head(15)
-            st.bar_chart(cat_counts)
+            cat_counts = filtered_df[selected_chart].value_counts().head(15).reset_index()
+            cat_counts.columns = [selected_chart, "Count"]
+            fig = px.bar(
+                cat_counts, x=selected_chart, y="Count",
+                title=f"{selected_chart} — Distribution"
+            )
+
+        fig.update_layout(
+            plot_bgcolor="#FFFFFF",
+            paper_bgcolor="#FFFFFF",
+            font=dict(family="Inter, sans-serif", color="#0F172A"),
+            margin=dict(l=20, r=20, t=50, b=20),
+        )
+        fig.update_traces(marker_color="#2563EB")
+
+        # scrollZoom disabled so scrolling the page over the chart doesn't
+        # accidentally zoom into it.
+        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
 
         st.markdown("---")
 
         st.markdown("### Data Records")
-        st.dataframe(filtered_df.head(50), use_container_width=True)
+        st.dataframe(display_df.head(50), use_container_width=True)
 
     # --- TAB 2: EXECUTIVE OVERVIEW ---
     with tab2:
         st.markdown("### Executive Presentation Strategy")
-
+        
         s1, s2, s3, s4 = st.tabs(["1. Overview", "2. Market Findings", "3. Financial Impact", "4. Next Steps"])
 
         with s1:
