@@ -359,7 +359,7 @@ if st.session_state['uploaded_file'] is None:
     st.markdown("""
         <div class="upload-container-card">
             <div class="upload-btn-icon" id="trigger-upload-pill">⬆️ Upload</div>
-            <div class="upload-limit-text">200MB per file • CSV</div>
+            <div class="upload-limit-text">20MB per file • CSV</div>
             <div class="upload-title">UPLOAD FILE</div>
             <div class="upload-subtext">Drag and drop your CSV file below to launch the dashboard and executive analytics.</div>
         </div>
