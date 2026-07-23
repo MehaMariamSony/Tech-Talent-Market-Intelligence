@@ -649,6 +649,6 @@ st.markdown("""
         <div>
             <strong style="color: #FFFFFF; font-size: 15px;">TECH INTELLIGENCE PORTAL</strong>
         </div>
-        <p>&copy; All Rights Reserved.</p>
+        <p>&copy; 2026 NexusForge. All Rights Reserved.</p>
     </div>
 """, unsafe_allow_html=True)
