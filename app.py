@@ -1,3 +1,5 @@
+import io
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -11,6 +13,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+MAX_FILE_SIZE_MB = 20
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
 # ----------------------------------------------------
 # 2. CUSTOM UI STYLES
@@ -261,6 +266,12 @@ st.markdown("""
         padding: 10px 20px;
         border-radius: 20px;
     }
+
+    /* Column checkbox list container - keeps the sidebar checkbox group
+       compact instead of each one taking a full default-spaced row. */
+    .column-checklist div[data-testid="stCheckbox"] {
+        margin-bottom: -8px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -280,6 +291,21 @@ st.markdown("""
 if 'uploaded_file' not in st.session_state:
     st.session_state['uploaded_file'] = None
 
+
+@st.cache_data(show_spinner="Reading and parsing your file...")
+def load_csv(file_bytes: bytes) -> pd.DataFrame:
+    """Parse the uploaded CSV once and cache the result.
+
+    Cached on the raw bytes of the file, so re-running the script because of
+    an unrelated widget change (currency, slider, sort, column checkboxes)
+    reuses the parsed DataFrame instead of re-reading the CSV from scratch
+    every time - this was one of the two big sources of the "taking so
+    long" slowdown, since Streamlit reruns the whole script top-to-bottom
+    on every interaction.
+    """
+    return pd.read_csv(io.BytesIO(file_bytes))
+
+
 def _pdf_output_to_bytes(pdf: "FPDF") -> bytes:
     """Normalize pdf.output(dest="S") across fpdf library variants.
 
@@ -297,8 +323,17 @@ def _pdf_output_to_bytes(pdf: "FPDF") -> bytes:
     return bytes(raw)
 
 
+@st.cache_data(show_spinner="Generating PDF report...")
 def generate_pdf_report(dataframe: pd.DataFrame, title: str, max_rows: int = 200) -> bytes:
     """Render a dataframe as a simple tabular PDF using fpdf.
+
+    Cached on (dataframe contents, title, max_rows). Without this, the PDF
+    was being rebuilt cell-by-cell on every single script rerun just because
+    it feeds a download_button's `data=` argument, even though the user
+    almost never actually clicks that button - this was the other big
+    source of the perceived slowness. Now it only regenerates when the
+    exported data actually changes (different filter, sort, columns, or
+    currency).
 
     The built-in core fonts only support latin-1, so any character outside
     that range (e.g. non-Latin currency symbols) is replaced rather than
@@ -356,10 +391,10 @@ EXCHANGE_RATES = {
 
 # Centered Blue Upload Box (Shows when no file is present)
 if st.session_state['uploaded_file'] is None:
-    st.markdown("""
+    st.markdown(f"""
         <div class="upload-container-card">
             <div class="upload-btn-icon" id="trigger-upload-pill">⬆️ Upload</div>
-            <div class="upload-limit-text">20MB per file • CSV</div>
+            <div class="upload-limit-text">{MAX_FILE_SIZE_MB}MB per file • CSV</div>
             <div class="upload-title">UPLOAD FILE</div>
             <div class="upload-subtext">Drag and drop your CSV file below to launch the dashboard and executive analytics.</div>
         </div>
@@ -372,8 +407,15 @@ if st.session_state['uploaded_file'] is None:
     uploaded_file = st.file_uploader("", type=["csv"], key="main_uploader", label_visibility="collapsed")
 
     if uploaded_file is not None:
-        st.session_state['uploaded_file'] = uploaded_file
-        st.rerun()
+        if uploaded_file.size > MAX_FILE_SIZE_BYTES:
+            size_mb = uploaded_file.size / (1024 * 1024)
+            st.error(
+                f"'{uploaded_file.name}' is {size_mb:.1f} MB, which is over the "
+                f"{MAX_FILE_SIZE_MB}MB limit. Please upload a smaller CSV file."
+            )
+        else:
+            st.session_state['uploaded_file'] = uploaded_file
+            st.rerun()
 
     # Wire the blue pill to the hidden native file input. Uses a recurring
     # attach (rather than a one-shot inline onclick) so the handler survives
@@ -411,9 +453,8 @@ if st.session_state['uploaded_file'] is None:
 # If file is present
 if st.session_state['uploaded_file'] is not None:
     uploaded_file = st.session_state['uploaded_file']
-    
-    uploaded_file.seek(0)
-    df = pd.read_csv(uploaded_file)
+
+    df = load_csv(uploaded_file.getvalue())
     
     # Sidebar Controls
     st.sidebar.markdown("### Control Panel")
@@ -462,11 +503,14 @@ if st.session_state['uploaded_file'] is not None:
     # Column & Sort Controls
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Column & Sort Controls")
-    selected_columns = st.sidebar.multiselect(
-        "Columns to display:",
-        options=all_cols,
-        default=all_cols
-    )
+    st.sidebar.markdown("**Columns to display:**")
+    st.sidebar.markdown('<div class="column-checklist">', unsafe_allow_html=True)
+    selected_columns = []
+    for col in all_cols:
+        if st.sidebar.checkbox(col, value=True, key=f"col_chk_{col}"):
+            selected_columns.append(col)
+    st.sidebar.markdown('</div>', unsafe_allow_html=True)
+
     sort_column = st.sidebar.selectbox("Sort by:", options=all_cols, key="sort_column")
     sort_ascending = st.sidebar.radio(
         "Sort order:", options=["Ascending", "Descending"], horizontal=True
